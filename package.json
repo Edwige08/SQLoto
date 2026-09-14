@@ -6,11 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "import:csv": "tsx scripts/import-csv.ts ./data/loto_201911.csv"
   },
   "dependencies": {
     "@openrouter/ai-sdk-provider": "^3.0.0",
+    "csv-parse": "^7.0.2",
+    "dotenv": "^17.4.2",
     "next": "16.3.5",
+    "pg": "^8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -18,6 +22,7 @@
     "@eslint/js": "^10.0.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
@@ -25,6 +30,7 @@
     "eslint-plugin-react": "^7.37.5",
     "globals": "^17.12.0",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5",
     "typescript-eslint": "^8.70.0"
   },
