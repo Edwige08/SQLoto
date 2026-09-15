@@ -27,7 +27,12 @@ export default function Home() {
           Veuillez entrer ci-dessous votre question sur l&apos;historique des tirages FDJ
         </label>
         
-        <textarea name="sqlQuery" id="sqlQuery" placeholder="Enter your SQL query here..." className="border border-gray-500 p-2 w-full min-h-50"></textarea>
+        <textarea
+          name="sqlQuery" 
+          id="sqlQuery" 
+          placeholder="Entrez votre question ici..." 
+          className="border border-gray-500 p-2 w-full min-h-50"
+          maxLength={300} />
         <button className="mt-4 bg-blue-500 text-white px-4 py-2 rounded">Exécuter la requête</button>
       </main>
     </div>
