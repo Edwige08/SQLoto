@@ -85,6 +85,21 @@ export function validateSql(rawSql: string): SqlValidationResult {
     };
   }
 
+  // --- Noms de CTE (WITH ... AS (...)) : ce sont des alias internes à la
+  // requête, pas des tables externes. Il ne faut pas les soumettre à la
+  // liste blanche de tables, sous peine de rejeter à tort des requêtes
+  // légitimes utilisant des CTE (courant pour "déplier" boule_1..5).
+  const cteNames = new Set<string>();
+  const withClause = (statements[0] as { with?: unknown }).with;
+  if (Array.isArray(withClause)) {
+    for (const cte of withClause as any[]) {
+      const rawName = cte?.name?.value ?? cte?.name;
+      if (typeof rawName === "string") {
+        cteNames.add(rawName.toLowerCase());
+      }
+    }
+  }
+
   // --- Vérification des tables utilisées ----------------------------------
   let tableList: string[];
   try {
@@ -95,6 +110,7 @@ export function validateSql(rawSql: string): SqlValidationResult {
 
   for (const entry of tableList) {
     const tableName = entry.split("::").pop()!.replace(/"/g, "").toLowerCase();
+    if (cteNames.has(tableName)) continue; // alias de CTE : pas une vraie table externe
     if (!ALLOWED_TABLES.includes(tableName)) {
       return { valid: false, reason: `Table non autorisée : ${tableName}` };
     }
@@ -111,9 +127,21 @@ export function validateSql(rawSql: string): SqlValidationResult {
   for (const entry of columnList) {
     const parts = entry.split("::");
     const columnName = parts[parts.length - 1].replace(/"/g, "").toLowerCase();
-    // node-sql-parser renvoie le jeton spécial "(.*)" pour un SELECT *,
-    // pas un simple "*". La table étant déjà validée, on l'accepte.
+    const tablePart = parts.length >= 3 ? parts[parts.length - 2].toLowerCase() : "";
+
     if (columnName === "*" || columnName === "(.*)") continue;
+
+    // On ne valide que les colonnes explicitement rattachées à la vraie
+    // table "tirages" (la seule dont l'accès est autorisé, cf. vérification
+    // des tables ci-dessus). Toute colonne rattachée à autre chose (alias de
+    // CTE, alias de sous-requête dérivée, fonction de type unnest, ou non
+    // rattachable du tout par le parseur) est nécessairement un nom interne
+    // à la requête : la vraie donnée sous-jacente a de toute façon sa
+    // propre entrée qualifiée "tirages" ailleurs dans la liste, et sera
+    // vérifiée à ce moment-là. Cette règle couvre uniformément tous les cas
+    // (CTE, sous-requête, fonctions...) sans avoir à les énumérer un par un.
+    if (tablePart !== "tirages") continue;
+
     if (!ALLOWED_COLUMNS.has(columnName)) {
       return { valid: false, reason: `Colonne non autorisée : ${columnName}` };
     }

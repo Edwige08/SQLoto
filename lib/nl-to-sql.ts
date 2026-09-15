@@ -6,7 +6,7 @@
 
 import { validateUserQuestion } from "./input-security";
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+export const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 // --- Description du schéma envoyée au modèle --------------------------------
 //
@@ -115,7 +115,7 @@ const RESPONSE_JSON_SCHEMA = {
 // Liste de modèles gratuits candidats, essayés dans l'ordre en cas d'échec
 // (limite de débit, panne fournisseur, etc.). Vérifiée en direct via
 // scripts/list-free-models.ts — à réévaluer si l'un d'eux disparaît de l'offre gratuite.
-const CANDIDATE_MODELS = [
+export const CANDIDATE_MODELS = [
   "nvidia/nemotron-3-super-120b-a12b:free",
   "nex-agi/nex-n2.5-pro:free",
   "dots-studio/dots-3-note-preview:free",
@@ -154,7 +154,7 @@ async function callModel(
     body: JSON.stringify({
       model,
       temperature: 0.1, // faible : on veut une traduction fidèle, pas de créativité
-      max_tokens: 500,
+      max_tokens: 800, // relevé de 500 : certains modèles "raisonneurs" consomment une partie invisible du budget avant d'écrire le JSON final
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: question },

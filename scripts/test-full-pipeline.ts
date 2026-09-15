@@ -7,9 +7,11 @@
 import dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
 
+import { generateSqlFromQuestion } from "../lib/nl-to-sql";
+import { runValidatedQuery } from "../lib/execute-sql";
+import { formatFinalAnswer } from "../lib/format-answer";
+
 async function main() {
-  const { generateSqlFromQuestion } = await import("../lib/nl-to-sql");
-  const { runValidatedQuery } = await import("../lib/execute-sql");
   const question =
     process.argv[2] ?? "Combien de fois le numéro 12 est-il sorti depuis janvier ?";
 
@@ -38,10 +40,21 @@ async function main() {
     return;
   }
 
-  console.log("[3/3] Résultat");
+  console.log("[3/3] Résultat brut");
   console.log("  SQL réellement exécuté :", execution.sqlExecuted);
   console.log("  Nombre de lignes       :", execution.rows.length);
   console.log("  Aperçu                 :", execution.rows.slice(0, 5));
+
+  console.log("\n[4/4] Mise en forme de la réponse finale...");
+  const finalAnswer = await formatFinalAnswer(
+    question,
+    execution.sqlExecuted,
+    execution.rows
+  );
+  console.log("  Réponse         :", finalAnswer.reponse);
+  console.log("  Résumé données  :", finalAnswer.resumeDonnees);
+  console.log("  Limites         :", finalAnswer.limites);
+  console.log("  Modèle utilisé  :", finalAnswer.modelUsed);
 }
 
 main().catch((err) => {
