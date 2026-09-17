@@ -5,8 +5,8 @@
 // c'est le rôle de la Partie 4 (validation) de la traiter avant exécution.
 
 import { validateUserQuestion } from "./input-security";
-
-export const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+import { OPENROUTER_URL, CANDIDATE_MODELS, fetchWithTimeout } from "./openrouter-config";
+import { ConversationState, buildContextMessages } from "./conversation";
 
 // --- Description du schéma envoyée au modèle --------------------------------
 //
@@ -70,9 +70,11 @@ Contraintes strictes sur la requête SQL que tu proposes :
 const AMBIGUITY_RULES = `
 Règles pour détecter une question ambiguë (status = "ambigu") :
 - Si la question utilise un critère subjectif sans définition objective (ex: "meilleur", "intéressant", "idéal"), ne choisis jamais toi-même une interprétation : réponds "ambigu" et demande à l'utilisateur de préciser le critère.
-- Si la question fait référence à un contexte non fourni ("compare-les", "et avant ?", "les résultats récents"), réponds "ambigu" et demande de préciser de quoi il s'agit.
-- Exemples de questions à traiter comme "ambigu" : "Quel est le meilleur numéro ?", "Compare-les.", "Et avant ?", "Donne-moi les résultats récents.", "Quels numéros sont les plus intéressants ?"
-- Ne génère jamais de SQL basé sur une hypothèse que tu as inventée à la place de l'utilisateur.
+- Si la question fait référence à un contexte non fourni ("compare-les", "et avant ?", "les résultats récents") ET qu'aucun résumé ni échange précédent ne permet de lever cette ambiguïté, réponds "ambigu" et demande de préciser de quoi il s'agit.
+- Si un résumé de conversation ou des échanges précédents te sont fournis avant la question, utilise-les en priorité pour comprendre à quoi une question elliptique fait référence (ex: "et sur les cinquante derniers tirages ?" après une question sur la fréquence d'un numéro porte très probablement sur cette même fréquence, restreinte aux 50 derniers tirages).
+- Pour « Quel numéro n'est pas apparu depuis le plus longtemps ? », tu DOIS retourner status = "ok", jamais "ambigu". Considère les numéros de 1 à 49 et l'ensemble de l'historique. Déplie boule_1 à boule_5, calcule MAX(date_tirage) pour chaque numéro, puis retourne la plus petite de ces dates.
+- Exemples de questions à traiter comme "ambigu" EN L'ABSENCE de contexte antérieur : "Quel est le meilleur numéro ?", "Compare-les.", "Et avant ?", "Donne-moi les résultats récents.", "Quels numéros sont les plus intéressants ?"
+- Ne génère jamais de SQL basé sur une hypothèse que tu as inventée à la place de l'utilisateur, que ce soit avec ou sans contexte.
 `.trim();
 
 const INJECTION_RULES = `
@@ -112,15 +114,6 @@ const RESPONSE_JSON_SCHEMA = {
   },
 };
 
-// Liste de modèles gratuits candidats, essayés dans l'ordre en cas d'échec
-// (limite de débit, panne fournisseur, etc.). Vérifiée en direct via
-// scripts/list-free-models.ts — à réévaluer si l'un d'eux disparaît de l'offre gratuite.
-export const CANDIDATE_MODELS = [
-  "nvidia/nemotron-3-super-120b-a12b:free",
-  "nex-agi/nex-n2.5-pro:free",
-  "dots-studio/dots-3-note-preview:free",
-];
-
 // --- Types -------------------------------------------------------------------
 
 export interface NlToSqlResult {
@@ -129,6 +122,7 @@ export interface NlToSqlResult {
   message: string | null;
   modelUsed: string;
   rawResponse: string;
+  tokensUsed: number | null;
 }
 
 // --- Fonction principale -------------------------------------------------------
@@ -140,31 +134,68 @@ type AttemptResult =
   | { ok: true; result: NlToSqlResult }
   | { ok: false; reason: string };
 
+function parseModelJson(rawContent: string): {
+  status: string;
+  sql: string | null;
+  message: string | null;
+} | null {
+  const fencedContent = rawContent
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  const start = fencedContent.indexOf("{");
+  const end = fencedContent.lastIndexOf("}");
+
+  if (start === -1 || end <= start) return null;
+
+  try {
+    return JSON.parse(fencedContent.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
 async function callModel(
   model: string,
   systemPrompt: string,
+  contextMessages: { role: "system" | "user" | "assistant"; content: string }[],
   question: string
 ): Promise<AttemptResult> {
-  const response = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.1, // faible : on veut une traduction fidèle, pas de créativité
-      max_tokens: 800, // relevé de 500 : certains modèles "raisonneurs" consomment une partie invisible du budget avant d'écrire le JSON final
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: question },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: RESPONSE_JSON_SCHEMA,
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
       },
-    }),
-  });
+      body: JSON.stringify({
+        model,
+        temperature: 0.1, // faible : on veut une traduction fidèle, pas de créativité
+        max_tokens: 1600, // certains modèles raisonneurs consomment une partie invisible du budget avant d'écrire le JSON final
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...contextMessages,
+          { role: "user", content: question },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: RESPONSE_JSON_SCHEMA,
+        },
+      }),
+    });
+  } catch (err) {
+    // Erreur réseau OU timeout (AbortError) : dans les deux cas, on ne
+    // laisse jamais cette exception remonter et interrompre la bascule
+    // vers le modèle candidat suivant.
+    const isTimeout = (err as Error).name === "AbortError";
+    return {
+      ok: false,
+      reason: isTimeout
+        ? "Timeout dépassé (pas de réponse à temps)"
+        : `Erreur réseau : ${(err as Error).message}`,
+    };
+  }
 
   // Premier niveau : le transport HTTP lui-même a échoué.
   if (!response.ok) {
@@ -188,6 +219,7 @@ async function callModel(
   const modelUsed: string = data.model ?? model;
   const rawContent: string = data.choices?.[0]?.message?.content ?? "";
   const finishReason: string = data.choices?.[0]?.finish_reason ?? "inconnu";
+  const tokensUsed: number | null = data.usage?.total_tokens ?? null;
 
   // Troisième niveau : réponse "réussie" mais vide (ex: budget de tokens
   // épuisé par un raisonnement interne avant d'écrire le JSON final).
@@ -199,10 +231,8 @@ async function callModel(
   }
 
   // Parsing défensif : même en mode strict, pas de confiance aveugle au format.
-  let parsed: { status: string; sql: string | null; message: string | null };
-  try {
-    parsed = JSON.parse(rawContent);
-  } catch {
+  const parsed = parseModelJson(rawContent);
+  if (!parsed) {
     return { ok: false, reason: "JSON invalide renvoyé par le modèle" };
   }
 
@@ -230,12 +260,14 @@ async function callModel(
       message: parsed.message,
       modelUsed,
       rawResponse: rawContent,
+      tokensUsed,
     },
   };
 }
 
 export async function generateSqlFromQuestion(
-  question: string
+  question: string,
+  conversation: ConversationState = { summary: null, recentTurns: [] }
 ): Promise<NlToSqlResult> {
   // --- Barrière 1 : vérification côté code, avant tout appel au modèle. ---
   // Déterministe, rapide, et ne dépend d'aucune "bonne volonté" du LLM.
@@ -248,6 +280,7 @@ export async function generateSqlFromQuestion(
         "Cette demande ne peut pas être traitée. Reformule ta question sur les tirages du Loto.",
       modelUsed: "aucun (bloqué avant appel au modèle)",
       rawResponse: `[bloqué localement] ${validation.reason}`,
+      tokensUsed: null,
     };
   }
 
@@ -270,10 +303,14 @@ Réponds uniquement au format JSON demandé, sans texte additionnel.`;
   // rédigé soit interprété comme une nouvelle instruction.
   const delimitedUserMessage = `<question_utilisateur>\n${validation.cleaned}\n</question_utilisateur>`;
 
+  // Résumé + derniers échanges, insérés entre le prompt système et la
+  // nouvelle question — jamais l'intégralité de l'historique.
+  const contextMessages = buildContextMessages(conversation);
+
   const echecs: string[] = [];
 
   for (const model of CANDIDATE_MODELS) {
-    const attempt = await callModel(model, systemPrompt, delimitedUserMessage);
+    const attempt = await callModel(model, systemPrompt, contextMessages, delimitedUserMessage);
 
     if (attempt.ok) {
       if (echecs.length > 0) {

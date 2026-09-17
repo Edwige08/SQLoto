@@ -1,14 +1,5 @@
-// Première barrière de sécurité : des vérifications sur l'entrée utilisateur
-// AVANT même d'appeler le modèle. Contrairement aux règles données dans le
-// prompt (que le modèle peut choisir d'ignorer), ces vérifications sont
-// déterministes et ne dépendent d'aucune "bonne volonté" du LLM.
+const MAX_QUESTION_LENGTH = 300;
 
-const MAX_QUESTION_LENGTH = 300; // largement suffisant pour une question sur le Loto
-
-// Liste de motifs clairement anormaux pour ce cas d'usage précis.
-// Aucune question légitime sur des tirages de Loto n'a besoin de contenir
-// ces expressions : leur présence est un signal fort de tentative de
-// manipulation, pas un faux positif probable.
 const SUSPICIOUS_PATTERNS: RegExp[] = [
   /ignore.*(instructions|consignes|r[eè]gles)/i,
   /(affiche|donne|montre).*(prompt|invite).*(syst[eè]me)/i,

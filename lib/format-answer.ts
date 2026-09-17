@@ -6,7 +6,7 @@
 // purement rédactionnel, pas analytique. Toute donnée qu'il cite doit
 // pouvoir se retrouver telle quelle dans le résultat qu'on lui a donné.
 
-import { OPENROUTER_URL, CANDIDATE_MODELS } from "./nl-to-sql";
+import { OPENROUTER_URL, CANDIDATE_MODELS, fetchWithTimeout } from "./openrouter-config";
 
 // On ne montre jamais plus de N lignes au modèle, pour deux raisons :
 // éviter un gaspillage de tokens sur un résultat déjà large, et éviter
@@ -96,26 +96,35 @@ export async function formatFinalAnswer(
   const echecs: string[] = [];
 
   for (const model of CANDIDATE_MODELS) {
-    const response = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.2, // un peu plus haut que pour le SQL : ici on veut une phrase naturelle, pas juste une traduction mécanique
-        max_tokens: 400,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userMessage },
-        ],
-        response_format: {
-          type: "json_schema",
-          json_schema: RESPONSE_JSON_SCHEMA,
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
         },
-      }),
-    });
+        body: JSON.stringify({
+          model,
+          temperature: 0.2, // un peu plus haut que pour le SQL : ici on veut une phrase naturelle, pas juste une traduction mécanique
+          max_tokens: 400,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userMessage },
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: RESPONSE_JSON_SCHEMA,
+          },
+        }),
+      });
+    } catch (err) {
+      const isTimeout = (err as Error).name === "AbortError";
+      echecs.push(
+        `${model} -> ${isTimeout ? "Timeout dépassé" : `Erreur réseau: ${(err as Error).message}`}`
+      );
+      continue;
+    }
 
     if (!response.ok) {
       echecs.push(`${model} -> HTTP ${response.status}`);
